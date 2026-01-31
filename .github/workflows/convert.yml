@@ -2,41 +2,87 @@ name: Convert Surge to Shadowrocket Modules
 
 on:
   schedule:
-    - cron: '0 2 * * *'  # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'  # Run daily at 2 AM UTC (10 AM Beijing Time)
   workflow_dispatch:  # Allow manual trigger
 
 jobs:
   convert:
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.9'
-        
+        python-version: '3.11'
+        cache: 'pip'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests
-        
+        pip install -r requirements.txt
+
     - name: Run conversion script
       run: |
-        python main.py
-        
-    - name: Commit and push if there are changes
+        python enhanced_main.py
+
+    - name: Check for changes
+      id: check_changes
       run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add -A
-        if [ -z "$(git status --porcelain)" ]; then
-          echo "No changes to commit"
+        if [ -n "$(git status --porcelain output/)" ]; then
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "Changes detected in output directory"
         else
-          git commit -m "feat: Update converted Shadowrocket modules $(date)"
-          git push
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+          echo "No changes detected"
         fi
+
+    - name: Create Release with converted modules
+      if: steps.check_changes.outputs.has_changes == 'true'
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Generate release tag with date
+        TAG_NAME="v$(date +'%Y.%m.%d')"
+        RELEASE_NAME="Shadowrocket Modules - $(date +'%Y-%m-%d')"
+
+        # Create release notes
+        cat > release_notes.md << 'EOF'
+        ## 📦 Shadowrocket 模块自动更新
+
+        本次更新包含从 [fmz200/wool_scripts](https://github.com/fmz200/wool_scripts) 转换的最新模块。
+
+        ### 📥 使用方法
+        1. 下载需要的 `.module` 文件
+        2. 在 Shadowrocket 中导入模块
+        3. 启用相应的模块即可使用
+
+        ### 🔄 更新内容
+        - 自动同步最新的 Surge 模块
+        - 转换为 Shadowrocket 兼容格式
+
+        ---
+        🤖 此版本由 GitHub Actions 自动生成
+        EOF
+
+        # Delete existing release with same tag if exists
+        gh release delete "$TAG_NAME" -y 2>/dev/null || true
+
+        # Create new release
+        gh release create "$TAG_NAME" \
+          --title "$RELEASE_NAME" \
+          --notes-file release_notes.md \
+          output/*.module
+
+    - name: Commit changes to repository
+      if: steps.check_changes.outputs.has_changes == 'true'
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add output/
+        git commit -m "chore: Update converted modules - $(date +'%Y-%m-%d')"
+        git push
