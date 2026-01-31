@@ -13,11 +13,22 @@ This project automatically fetches Surge modules from [fmz200/wool_scripts](http
 - **Script sections** → Adjusted spacing to Shadowrocket format (no spaces around `=`)
 - **Rule sections** → Maintained compatibility
 
+## Configuration
+
+Modules to convert are specified in `config.yaml`. You can modify this file to add or remove modules as needed.
+
 ## Usage
 
-The converted modules are in the `output/` directory and ready to use in Shadowrocket.
+### Manual Conversion
 
-## GitHub Actions Workflow
+```bash
+cd ~/Documents/surge-to-shadowrocket
+python3 main.py
+```
+
+The converted modules will be in the `output/` directory and ready to use in Shadowrocket.
+
+### GitHub Actions Workflow
 
 The following workflow can be used to automate the conversion process:
 
@@ -45,11 +56,11 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests
+        pip install requests pyyaml
         
     - name: Run conversion script
       run: |
-        python simple_convert.py
+        python main.py
         
     - name: Commit and push if there are changes
       run: |
@@ -66,11 +77,11 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-## Manual Updates
+## Adding New Modules
 
-To manually update the modules:
+To add new modules, edit `config.yaml` and add entries in the format:
 
-```bash
-cd ~/Documents/surge-to-shadowrocket
-python3 simple_convert.py
+```yaml
+  - source: "Surge/module/split/partX/ModuleName.sgmodule"
+    output: "ModuleName.module"
 ```

@@ -1,0 +1,29 @@
+# Configuration for Surge to Shadowrocket Converter
+
+# Modules to convert from fmz200/wool_scripts
+# Format: SURGE_PATH,OUTPUT_NAME
+modules:
+  - source: "Surge/module/split/partX/Xiaohongshu.sgmodule"
+    output: "Xiaohongshu.module"
+  - source: "Surge/module/split/partT/Twitter.sgmodule" 
+    output: "Twitter.module"
+  - source: "Surge/module/split/partW/WeChat.sgmodule"
+    output: "WeChat.module"
+  - source: "Surge/module/blockAds.module"
+    output: "blockAds.module"
+  - source: "Surge/module/weibo.module"
+    output: "Weibo.module"
+  - source: "Surge/module/split/partB/Bilibili.sgmodule"
+    output: "Bilibili.module"
+  - source: "Surge/module/split/partA/Aliexpress.sgmodule"
+    output: "Aliexpress.module"
+  - source: "Surge/module/split/partA/Alibaba.sgmodule"
+    output: "Alibaba.module"
+  - source: "Surge/module/split/partI/iQIYI.sgmodule"
+    output: "iQIYI.module"
+
+# GitHub repo info
+github:
+  owner: "fmz200"
+  repo: "wool_scripts"
+  branch: "main"
