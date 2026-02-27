@@ -8,8 +8,9 @@ import requests
 import re
 import yaml
 import time
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional, Tuple
 import logging
 
 
@@ -118,7 +119,7 @@ def validate_config(config: Dict) -> bool:
     return True
 
 
-def fetch_with_retry(url: str, max_retries: int = 3, delay: float = 1.0) -> Optional[str]:
+def fetch_with_retry(url: str, max_retries: int = 3, delay: float = 1.0) -> Tuple[Optional[str], Optional[str]]:
     """
     Fetch content with retry logic
     
@@ -128,16 +129,20 @@ def fetch_with_retry(url: str, max_retries: int = 3, delay: float = 1.0) -> Opti
         delay: Delay between retries in seconds
         
     Returns:
-        Content string if successful, None otherwise
+        Tuple of (content, error_type)
+        error_type can be:
+          - None: success
+          - "not_found": 404 returned from source
+          - "request_error": network or non-404 HTTP errors
     """
     for attempt in range(max_retries):
         try:
             response = requests.get(url, timeout=30)
             if response.status_code == 200:
-                return response.text
+                return response.text, None
             elif response.status_code == 404:
                 logger.warning(f"Module not found (404): {url}")
-                return None  # Don't retry 404 errors
+                return None, "not_found"  # Don't retry 404 errors
             else:
                 logger.warning(f"Attempt {attempt + 1} failed for {url}: {response.status_code}")
         except requests.exceptions.RequestException as e:
@@ -147,7 +152,7 @@ def fetch_with_retry(url: str, max_retries: int = 3, delay: float = 1.0) -> Opti
             time.sleep(delay * (2 ** attempt))  # Exponential backoff
     
     logger.error(f"All {max_retries} attempts failed for {url}")
-    return None
+    return None, "request_error"
 
 
 def main():
@@ -186,6 +191,7 @@ def main():
     success_count = 0
     fail_count = 0
     skipped_count = 0
+    request_error_count = 0
     
     # Process each module from config
     total_modules = len(config.get('modules', []))
@@ -199,12 +205,16 @@ def main():
         url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{source}"
         
         # Fetch content with retry logic
-        surge_content = fetch_with_retry(url)
-        
+        surge_content, error_type = fetch_with_retry(url)
+
         if surge_content is None:
-            # Specifically handle 404 errors (module not found)
-            logger.warning(f"  ⚠️  Skipping {output_name} (not found)")
-            skipped_count += 1
+            if error_type == "not_found":
+                logger.warning(f"  ⚠️  Skipping {output_name} (not found)")
+                skipped_count += 1
+            else:
+                logger.error(f"  ❌ Failed to fetch {output_name} due to request errors")
+                fail_count += 1
+                request_error_count += 1
             continue
         
         try:
@@ -231,6 +241,14 @@ def main():
     for file in sorted(output_dir.glob("*.module")):
         size = file.stat().st_size
         logger.info(f"   • {file.name} ({size} bytes)")
+
+    # Fail fast on request errors so GitHub Actions doesn't silently report "No changes"
+    if request_error_count > 0:
+        logger.error(
+            "\n❌ Conversion failed due to source fetch errors. "
+            "This usually indicates network/proxy issues or upstream access problems."
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":
