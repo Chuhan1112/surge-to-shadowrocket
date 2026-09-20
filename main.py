@@ -1,142 +1,146 @@
 #!/usr/bin/env python3
 """
-Enhanced Surge to Shadowrocket Converter
-Uses configuration file to specify which modules to convert
+Surge to Shadowrocket Converter
+Usage:
+  python main.py                        # selective mode (default, reads config.yaml)
+  python main.py --mode bulk            # convert all partA-Z modules from fmz200/wool_scripts
+  python main.py --mode selective --output-dir my_output
 """
 
-import requests
-import re
-import yaml
+import argparse
+import logging
+import sys
 from pathlib import Path
 
+import requests
 
-def convert_surge_to_shadowrocket(content):
-    """Convert Surge module content to Shadowrocket format"""
-    # First, replace [Map Local] with [URL Rewrite]
-    content = content.replace('[Map Local]', '[URL Rewrite]')
-    
-    lines = content.split('\n')
-    converted_lines = []
-    
-    in_script_section = False
-    in_map_local_section = False
-    
-    for line in lines:
-        # Skip empty lines
-        if not line.strip():
-            converted_lines.append(line)
-            continue
-            
-        # Handle script section conversions
-        if '[Script]' in line:
-            in_script_section = True
-            converted_lines.append(line)
-            continue
-        elif '[Map Local]' in line:  # This should not occur anymore after replacement, but kept for safety
-            in_map_local_section = True
-            # Replace with URL Rewrite
-            converted_lines.append('[URL Rewrite]')
-            continue
-        elif '[URL Rewrite]' in line:
-            in_map_local_section = True
-            converted_lines.append(line)
-            continue
-        elif line.startswith('[') and ']' in line:
-            in_script_section = False
-            in_map_local_section = False
-            converted_lines.append(line)
-            continue
-            
-        # Convert script lines (remove spaces and equals before type)
-        if in_script_section and '=' in line and ('type=' in line or 'pattern=' in line):
-            # Remove spaces around = and convert Surge format to Shadowrocket format
-            line = re.sub(r'\s*=\s*', '=', line)  # Remove spaces around =
-            line = re.sub(r',\s+', ',', line)     # Remove spaces after commas
-            converted_lines.append(line)
-            continue
-            
-        # Convert Map Local lines to URL Rewrite reject format (now they're in URL Rewrite section)
-        if in_map_local_section and line.strip().startswith('^https?:\/\/'):
-            # Convert Map Local patterns to URL Rewrite reject format
-            parts = line.split(' ', 2)
-            if len(parts) >= 1:
-                pattern = parts[0]
-                # Convert to Shadowrocket URL Rewrite reject format
-                converted_line = f"{pattern} - reject-dict"
-                converted_lines.append(converted_line)
-                continue
-        
-        # Other lines remain the same
-        converted_lines.append(line)
-    
-    return '\n'.join(converted_lines)
+from converter.config import load_config
+from converter.core import convert_surge_to_shadowrocket
+from converter.fetcher import fetch_with_retry
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+PARTS = [f"part{c}" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
 
 
-def main():
-    print("🚀 Starting Surge to Shadowrocket conversion...")
-    
-    # Load configuration
-    config_path = Path("config.yaml")
-    if not config_path.exists():
-        print(f"❌ Config file {config_path} not found")
-        return
-    
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    
-    # Create output directory
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
-    
-    github_info = config.get('github', {})
-    owner = github_info.get('owner', 'fmz200')
-    repo = github_info.get('repo', 'wool_scripts')
-    branch = github_info.get('branch', 'main')
-    
-    success_count = 0
-    fail_count = 0
-    
-    # Process each module from config
-    for module in config.get('modules', []):
-        source = module['source']
-        output_name = module['output']
-        
-        print(f"🔄 Converting {output_name}...")
-        
-        # Build the URL
+def run_selective(config: dict, output_dir: Path) -> int:
+    github = config.get('github', {})
+    owner = github.get('owner', 'fmz200')
+    repo = github.get('repo', 'wool_scripts')
+    branch = github.get('branch', 'main')
+
+    modules = config.get('modules', [])
+    total = len(modules)
+    success = fail = skipped = request_errors = 0
+
+    for i, module in enumerate(modules):
+        source, output_name = module['source'], module['output']
         url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{source}"
-        
-        try:
-            response = requests.get(url)
-            if response.status_code == 200:
-                surge_content = response.text
-                shadowrocket_content = convert_surge_to_shadowrocket(surge_content)
-                
-                output_file = output_dir / output_name
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    f.write(shadowrocket_content)
-                
-                print(f"  ✅ Converted {output_name}")
-                success_count += 1
+        logger.info("(%d/%d) Converting %s...", i + 1, total, output_name)
+
+        content, err = fetch_with_retry(url)
+        if content is None:
+            if err == "not_found":
+                logger.warning("  Skipping %s (not found)", output_name)
+                skipped += 1
             else:
-                print(f"  ❌ Failed to download {output_name} (status: {response.status_code})")
-                print(f"     URL: {url}")
-                fail_count += 1
-        except Exception as e:
-            print(f"  ❌ Error converting {output_name}: {e}")
-            fail_count += 1
-    
-    print(f"\n🎉 Conversion completed!")
-    print(f"   Success: {success_count} modules")
-    print(f"   Failed:  {fail_count} modules")
-    print(f"   Output:  {output_dir.absolute()}")
-    
-    # List all created files
-    print(f"\n📁 Created files:")
-    for file in sorted(output_dir.glob("*.module")):
-        size = file.stat().st_size
-        print(f"   • {file.name} ({size} bytes)")
+                logger.error("  Failed to fetch %s", output_name)
+                fail += 1
+                request_errors += 1
+            continue
+
+        converted = convert_surge_to_shadowrocket(content)
+        (output_dir / output_name).write_text(converted, encoding='utf-8')
+        logger.info("  Converted %s", output_name)
+        success += 1
+
+    _log_summary(success, fail, skipped, output_dir)
+    return request_errors
 
 
-if __name__ == "__main__":
+def run_bulk(owner: str, repo: str, output_dir: Path) -> int:
+    success = fail = skipped = request_errors = 0
+
+    for part in PARTS:
+        logger.info("Processing %s...", part)
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/Surge/module/split/{part}"
+        try:
+            resp = requests.get(api_url, timeout=30)
+        except requests.exceptions.RequestException as e:
+            logger.warning("Failed to list %s: %s", part, e)
+            continue
+
+        if resp.status_code == 404:
+            continue
+        if resp.status_code != 200:
+            logger.warning("Failed to list %s: HTTP %d", part, resp.status_code)
+            continue
+
+        for item in resp.json():
+            if not (item.get('type') == 'file' and item['name'].endswith('.sgmodule')):
+                continue
+
+            output_name = item['name'].replace('.sgmodule', '.module')
+            content, err = fetch_with_retry(item['download_url'])
+            if content is None:
+                if err == "not_found":
+                    skipped += 1
+                else:
+                    fail += 1
+                    request_errors += 1
+                continue
+
+            converted = convert_surge_to_shadowrocket(content)
+            (output_dir / output_name).write_text(converted, encoding='utf-8')
+            logger.info("  Converted %s", output_name)
+            success += 1
+
+    main_modules = ['weibo.module', 'blockAds.module', 'cookies.module', 'blockHTTPDNS.module']
+    for module in main_modules:
+        url = f"https://raw.githubusercontent.com/{owner}/{repo}/main/Surge/module/{module}"
+        content, err = fetch_with_retry(url)
+        if content is None:
+            skipped += 1 if err == "not_found" else 0
+            if err != "not_found":
+                fail += 1
+                request_errors += 1
+            continue
+        converted = convert_surge_to_shadowrocket(content)
+        (output_dir / module).write_text(converted, encoding='utf-8')
+        logger.info("  Converted %s", module)
+        success += 1
+
+    _log_summary(success, fail, skipped, output_dir)
+    return request_errors
+
+
+def _log_summary(success: int, fail: int, skipped: int, output_dir: Path) -> None:
+    logger.info("Conversion complete — success: %d  failed: %d  skipped: %d", success, fail, skipped)
+    logger.info("Output: %s", output_dir.absolute())
+    for f in sorted(output_dir.glob("*.module")):
+        logger.info("  %s (%d bytes)", f.name, f.stat().st_size)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Convert Surge modules to Shadowrocket format")
+    parser.add_argument('--mode', choices=['selective', 'bulk'], default='selective')
+    parser.add_argument('--output-dir', default='output')
+    args = parser.parse_args()
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+
+    if args.mode == 'selective':
+        config = load_config(Path('config.yaml'))
+        request_errors = run_selective(config, output_dir)
+    else:
+        request_errors = run_bulk('fmz200', 'wool_scripts', output_dir)
+
+    if request_errors:
+        logger.error("Exiting with error due to %d fetch failure(s)", request_errors)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
     main()
