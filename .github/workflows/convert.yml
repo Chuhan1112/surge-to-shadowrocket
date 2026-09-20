@@ -9,7 +9,7 @@ jobs:
   convert:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # needed for gh release create
+      contents: write
 
     steps:
     - name: Checkout code
@@ -30,55 +30,59 @@ jobs:
       run: |
         python -m pytest tests/ -v
 
+    - name: Download current release assets
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        mkdir -p current
+        # Download all .module assets from latest release; ignore error if release doesn't exist yet
+        gh release download latest --pattern "*.module" --dir current 2>/dev/null || true
+        echo "Current assets: $(ls current/*.module 2>/dev/null | wc -l) files"
+
     - name: Run conversion script
       run: |
         python main.py
 
-    - name: Check for changes
-      id: check_changes
-      run: |
-        if [ -n "$(git status --porcelain output/)" ]; then
-          echo "has_changes=true" >> $GITHUB_OUTPUT
-          echo "Changes detected in output directory"
-        else
-          echo "has_changes=false" >> $GITHUB_OUTPUT
-          echo "No changes detected"
-        fi
-
-    - name: Create Release with converted modules
-      if: steps.check_changes.outputs.has_changes == 'true'
+    - name: Upload changed modules to latest release
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Generate release tag with date
-        TAG_NAME="v$(date +'%Y.%m.%d')"
-        RELEASE_NAME="Shadowrocket Modules - $(date +'%Y-%m-%d')"
+        changed=()
+        for f in output/*.module; do
+          name=$(basename "$f")
+          if [ ! -f "current/$name" ] || ! cmp -s "$f" "current/$name"; then
+            changed+=("$f")
+            echo "Changed: $name"
+          fi
+        done
 
-        # Create release notes
-        cat > release_notes.md << 'EOF'
-        ## 📦 Shadowrocket 模块自动更新
+        if [ ${#changed[@]} -eq 0 ]; then
+          echo "No modules changed, skipping release update."
+          exit 0
+        fi
 
-        本次更新包含从 [fmz200/wool_scripts](https://github.com/fmz200/wool_scripts) 转换的最新模块。
+        echo "${#changed[@]} module(s) changed."
+
+        # Create latest release if it doesn't exist
+        if ! gh release view latest &>/dev/null; then
+          cat > release_notes.md << 'EOF'
+        ## 📦 Shadowrocket 模块
+
+        从 [fmz200/wool_scripts](https://github.com/fmz200/wool_scripts) 自动转换，持续更新。
 
         ### 📥 使用方法
         1. 下载需要的 `.module` 文件
-        2. 在 Shadowrocket 中导入模块
-        3. 启用相应的模块即可使用
-
-        ### 🔄 更新内容
-        - 自动同步最新的 Surge 模块
-        - 转换为 Shadowrocket 兼容格式
+        2. 在 Shadowrocket 中导入模块并启用
 
         ---
-        🤖 此版本由 GitHub Actions 自动生成
+        🤖 由 GitHub Actions 自动维护
         EOF
+          gh release create latest \
+            --title "Shadowrocket Modules (latest)" \
+            --notes-file release_notes.md \
+            --prerelease=false
+        fi
 
-        # Delete existing release with same tag if exists
-        gh release delete "$TAG_NAME" -y 2>/dev/null || true
-
-        # Create new release
-        gh release create "$TAG_NAME" \
-          --title "$RELEASE_NAME" \
-          --notes-file release_notes.md \
-          output/*.module
-
+        # Update only changed assets
+        gh release upload latest "${changed[@]}" --clobber
+        echo "Uploaded: ${changed[*]##*/}"
