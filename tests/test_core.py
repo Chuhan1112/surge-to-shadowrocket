@@ -1,65 +1,83 @@
 from converter.core import convert_surge_to_shadowrocket
 
 
-MAP_LOCAL_MODULE = """\
-[General]
-name = TestModule
+# ── [Map Local] ──────────────────────────────────────────────────────────────
 
-[Map Local]
-^https?://example.com/api/ads - reject-dict
-^https?://example.com/track data/empty.json
-
-[Script]
-script1 = type=http-response, pattern=^https?://api.example.com, script-path=test.js
-"""
-
-URL_REWRITE_MODULE = """\
-[General]
-name = TestModule
-
-[URL Rewrite]
-^https?://example.com/api/ads - reject-dict
-^https?://example.com/track - reject-dict
-"""
-
-SCRIPT_MODULE = """\
-[Script]
-s1 = type = http-response, pattern = ^https?://api.example.com, script-path=test.js
-s2 = type=http-request,  pattern=^https?://other.com,  script-path=other.js
-"""
-
-
-def test_map_local_header_replaced():
+def test_map_local_header_preserved():
     result = convert_surge_to_shadowrocket("[Map Local]\n")
-    assert "[URL Rewrite]" in result
-    assert "[Map Local]" not in result
+    assert "[Map Local]" in result
 
 
-def test_map_local_rule_converted_to_reject_dict():
-    content = "[Map Local]\n^https?://example.com/ads some-response\n"
+def test_map_local_status_code_stripped():
+    content = "[Map Local]\n^https?://example.com/api data-type=text data=\"{}\" status-code=200\n"
     result = convert_surge_to_shadowrocket(content)
-    assert "^https?://example.com/ads - reject-dict" in result
+    assert "status-code" not in result
+    assert "^https?://example.com/api" in result
+    assert 'data-type=text' in result
 
 
-def test_url_rewrite_header_preserved():
-    content = "[URL Rewrite]\n^https?://example.com/ads - reject-dict\n"
+def test_map_local_without_status_code_unchanged():
+    content = "[Map Local]\n^https?://example.com/img data-type=tiny-gif\n"
     result = convert_surge_to_shadowrocket(content)
-    assert result.count("[URL Rewrite]") == 1
-    assert "[Map Local]" not in result
+    assert "^https?://example.com/img data-type=tiny-gif" in result
 
 
-def test_url_rewrite_rule_converted():
-    content = "[URL Rewrite]\n^https?://example.com/track data/empty.json\n"
+def test_map_local_comment_preserved():
+    content = "[Map Local]\n# this is a comment\n^https?://example.com/ data-type=tiny-gif status-code=200\n"
     result = convert_surge_to_shadowrocket(content)
-    assert "^https?://example.com/track - reject-dict" in result
+    assert "# this is a comment" in result
 
 
-def test_script_spacing_normalized():
+# ── [Rule] ───────────────────────────────────────────────────────────────────
+
+def test_rule_simple_domain_suffix_preserved():
+    content = "[Rule]\nDOMAIN-SUFFIX,example.com,REJECT\n"
+    result = convert_surge_to_shadowrocket(content)
+    assert "DOMAIN-SUFFIX,example.com,REJECT" in result
+
+
+def test_rule_compound_and_dropped():
+    content = "[Rule]\nAND,((PROTOCOL,QUIC),(DOMAIN-SUFFIX,example.com)),REJECT\n"
+    result = convert_surge_to_shadowrocket(content)
+    assert "AND," not in result
+
+
+def test_rule_compound_or_dropped():
+    content = "[Rule]\nOR,((DOMAIN-SUFFIX,a.com),(DOMAIN-SUFFIX,b.com)),REJECT\n"
+    result = convert_surge_to_shadowrocket(content)
+    assert "OR," not in result
+
+
+# ── [Script] ─────────────────────────────────────────────────────────────────
+
+def test_script_spacing_normalised():
     content = "[Script]\ns1 = type = http-response, pattern = ^https?://api.example.com, script-path=test.js\n"
     result = convert_surge_to_shadowrocket(content)
-    assert " = " not in result.split("[Script]")[1]
-    assert ",  " not in result
+    script_body = result.split("[Script]")[1]
+    assert " = " not in script_body
+    assert ",  " not in script_body
 
+
+def test_script_engine_field_removed():
+    content = "[Script]\ns1 = type=http-response,pattern=^https?://a.com,engine=webview,script-path=test.js\n"
+    result = convert_surge_to_shadowrocket(content)
+    assert "engine=" not in result
+
+
+def test_script_max_size_field_removed():
+    content = "[Script]\ns1 = type=http-response,pattern=^https?://a.com,max-size=-1,script-path=test.js\n"
+    result = convert_surge_to_shadowrocket(content)
+    assert "max-size=" not in result
+
+
+def test_script_binary_body_mode_normalised():
+    content = "[Script]\ns1 = type=http-response,pattern=^https?://a.com,binary-body-mode=1,script-path=test.js\n"
+    result = convert_surge_to_shadowrocket(content)
+    assert "binary-body-mode=true" in result
+    assert "binary-body-mode=1" not in result
+
+
+# ── General ──────────────────────────────────────────────────────────────────
 
 def test_comments_and_blank_lines_preserved():
     content = "# comment\n\n[General]\nname = Test\n"
@@ -68,17 +86,9 @@ def test_comments_and_blank_lines_preserved():
     assert "\n\n" in result
 
 
-def test_non_url_lines_in_url_rewrite_unchanged():
-    content = "[URL Rewrite]\n# this is a comment line\nsome-other-config = value\n"
+def test_url_rewrite_unchanged():
+    content = "[URL Rewrite]\n^https?://example.com/ads - reject\n# comment\n"
     result = convert_surge_to_shadowrocket(content)
-    assert "# this is a comment line" in result
-    assert "some-other-config = value" in result
+    assert "^https?://example.com/ads - reject" in result
+    assert "# comment" in result
 
-
-def test_full_map_local_module():
-    result = convert_surge_to_shadowrocket(MAP_LOCAL_MODULE)
-    assert "[URL Rewrite]" in result
-    assert "[Map Local]" not in result
-    assert "^https?://example.com/api/ads - reject-dict" in result
-    assert "[General]" in result
-    assert "[Script]" in result

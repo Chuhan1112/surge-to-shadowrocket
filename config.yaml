@@ -19,8 +19,8 @@ modules:
     output: "Aliexpress.module"
   - source: "Surge/module/split/partA/Alibaba.sgmodule"
     output: "Alibaba.module"
-  - source: "Surge/module/split/partI/iQIYI.sgmodule"
-    output: "iQIYI.module"
+  - source: "Surge/module/split/partH/Hupu.sgmodule"
+    output: "Hupu.module"
 
 # GitHub repo info
 github:
